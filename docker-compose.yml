@@ -19,3 +19,27 @@ services:
       dockerfile: images/Dockerfile.java
     image: mcp-sandbox-java:local
     profiles: ["build"]
+
+  mcp-code-sandbox:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    image: mcp-code-sandbox-server:local
+    profiles: ["server"]
+    ports:
+      - "8766:8766"
+    environment:
+      SANDBOX_API_KEY: ${SANDBOX_API_KEY}
+      SANDBOX_TRANSPORT: streamable-http
+      SANDBOX_HOST: 0.0.0.0
+      SANDBOX_PORT: 8766
+      SANDBOX_ALLOWED_HOSTS: mcp-code-sandbox:8766,localhost:8766,127.0.0.1:8766,host.docker.internal:8766
+      SANDBOX_LOG_LEVEL: INFO
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import socket; s=socket.create_connection(('localhost', 8766), timeout=3); s.close()\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s

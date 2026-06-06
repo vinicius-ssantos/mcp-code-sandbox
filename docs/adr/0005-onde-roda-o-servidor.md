@@ -12,7 +12,9 @@ The MCP server needs to manage Docker containers. Two deployment options were co
 
 ## Decision
 
-Run the server on the host (option 1).
+Run the server on the host (option 1) by default.
+
+For local `personal-platform-infra` Compose development, a containerized server image is allowed as an explicit exception. That service mounts `/var/run/docker.sock` and must only be used in trusted local development.
 
 ## Reasons
 
@@ -33,6 +35,7 @@ Logs from the server appear directly in the terminal. Restarting is `Ctrl+C` + `
 - The server is not containerized, so its Python version and dependencies depend on the host environment. A `venv` and a pinned `requirements.txt` mitigate this.
 - Updating the server requires updating the host `venv`, not just pulling a new image.
 - If the project ever needs to run on a remote machine without direct SSH access, a containerized deployment with careful socket permissions could be revisited as a new ADR.
+- The local platform Compose exception trades security isolation for operator convenience. It must not be treated as the production deployment model.
 
 ## Relationship to ci-self-hosted-runner
 
