@@ -3,12 +3,12 @@ from __future__ import annotations
 import io
 import logging
 import tarfile
-import tempfile
 import time
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from typing import Any
 
 TIMEOUT_SECONDS = 30
 MEMORY_LIMIT = "256m"
@@ -116,13 +116,13 @@ class DockerSandbox:
         image = IMAGES[language]
         container_name = f"mcp-code-sandbox-{language}-{uuid.uuid4().hex}"
         container = None
-        workspace_dir = tempfile.TemporaryDirectory(prefix="mcp-code-sandbox-") if files else None
+        workspace_volume = None
         started_at = time.monotonic()
         try:
             volumes = None
-            if workspace_dir is not None:
-                materialize_workspace(Path(workspace_dir.name), files)
-                volumes = {workspace_dir.name: {"bind": "/workspace", "mode": "ro"}}
+            if files:
+                workspace_volume = self._create_workspace_volume(image, files)
+                volumes = {workspace_volume.name: {"bind": "/workspace", "mode": "ro"}}
 
             LOGGER.info(
                 "sandbox_execution_start",
@@ -207,8 +207,49 @@ class DockerSandbox:
                     container.remove(force=True)
                 except self._docker_exception:
                     pass
-            if workspace_dir is not None:
-                workspace_dir.cleanup()
+            if workspace_volume is not None:
+                try:
+                    workspace_volume.remove(force=True)
+                except self._docker_exception:
+                    pass
+
+    def _create_workspace_volume(self, image: str, files: Mapping[str, str]) -> Any:
+        volume_name = f"mcp-code-sandbox-workspace-{uuid.uuid4().hex}"
+        volume = self._client.volumes.create(name=volume_name)
+        helper_name = f"mcp-code-sandbox-volume-init-{uuid.uuid4().hex}"
+        helper = None
+        try:
+            helper = self._client.containers.create(
+                image=image,
+                command=["sleep", "60"],
+                name=helper_name,
+                detach=True,
+                working_dir="/workspace",
+                volumes={volume.name: {"bind": "/workspace", "mode": "rw"}},
+                network_mode="none",
+                read_only=True,
+                tmpfs=TMPFS,
+                mem_limit=MEMORY_LIMIT,
+                memswap_limit=MEMORY_LIMIT,
+                cpu_period=CPU_PERIOD,
+                cpu_quota=CPU_QUOTA,
+                user="sandbox",
+            )
+            helper.start()
+            helper.put_archive("/workspace", build_tar(files))
+            return volume
+        except self._docker_exception:
+            try:
+                volume.remove(force=True)
+            except self._docker_exception:
+                pass
+            raise
+        finally:
+            if helper is not None:
+                try:
+                    helper.remove(force=True)
+                except self._docker_exception:
+                    pass
 
 
 def normalize_language(language: str) -> str:

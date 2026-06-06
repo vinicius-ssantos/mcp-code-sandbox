@@ -11,7 +11,7 @@ MCP client
   |
   | MCP over stdio or streamable HTTP
   v
-mcp-code-sandbox server (Python, runs on host)
+mcp-code-sandbox server (Python, host process by default)
   |
   | Docker SDK
   v
@@ -21,7 +21,7 @@ Ephemeral sandbox container
 stdout / stderr / exit code
 ```
 
-The server intentionally runs on the host, not inside a container. This lets it talk to the Docker daemon directly without mounting the Docker socket into another container.
+The default mode runs the server on the host. Local platform Compose can also run the server as a container by mounting the Docker socket; that mode is intended for development convenience only.
 
 ## MCP tools
 
@@ -51,7 +51,8 @@ Supported languages:
 - Containers are removed immediately after execution.
 - HTTP transports require `Authorization: Bearer <SANDBOX_API_KEY>`.
 - The server binds to `127.0.0.1` by default.
-- The Docker socket is accessed only by the host server process and is never mounted into sandbox containers.
+- In the default host mode, the Docker socket is accessed only by the host server process and is never mounted into sandbox containers.
+- In local Compose server mode, the MCP server container mounts the Docker socket so it can create sibling sandbox containers. Do not expose that deployment beyond trusted local development.
 
 See [docs/adr/0004-modelo-seguranca.md](docs/adr/0004-modelo-seguranca.md) for the full security model.
 
@@ -119,6 +120,15 @@ $env:SANDBOX_API_KEY="<your-key>"
 py -m server.main --transport streamable-http --host 127.0.0.1 --port 8765
 ```
 
+Containerized local server:
+
+```bash
+docker compose --profile build build
+SANDBOX_API_KEY=<your-key> docker compose --profile server up --build
+```
+
+The containerized server listens on `http://localhost:8766/mcp` and mounts `/var/run/docker.sock`.
+
 ## Claude Code configuration
 
 ```json
@@ -168,6 +178,7 @@ images/
   Dockerfile.python
   Dockerfile.node
   Dockerfile.java
+Dockerfile.server  Local Compose server image
 docker-compose.yml Builds the sandbox images with the build profile
 .env.example
 docs/adr/           Architecture decision records
