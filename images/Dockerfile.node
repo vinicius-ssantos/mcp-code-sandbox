@@ -1,0 +1,8 @@
+FROM node:20-slim
+
+RUN useradd --create-home --shell /usr/sbin/nologin sandbox \
+    && mkdir -p /workspace \
+    && chown sandbox:sandbox /workspace
+
+WORKDIR /workspace
+USER sandbox
