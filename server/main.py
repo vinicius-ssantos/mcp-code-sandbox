@@ -7,11 +7,16 @@ from secrets import compare_digest
 
 from dotenv import load_dotenv
 from mcp.server.auth.provider import AccessToken
+from mcp.server.auth.settings import AuthSettings
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
+from pydantic import AnyHttpUrl, TypeAdapter
 
 from .tools import SandboxTools
 
 load_dotenv()
+
+HTTP_URL_ADAPTER: TypeAdapter[AnyHttpUrl] = TypeAdapter(AnyHttpUrl)
 
 
 class ApiKeyTokenVerifier:
@@ -31,13 +36,37 @@ class ApiKeyTokenVerifier:
 def create_server(host: str, port: int) -> FastMCP:
     api_key = os.getenv("SANDBOX_API_KEY")
     token_verifier = ApiKeyTokenVerifier(api_key) if api_key else None
+    auth_settings = None
+    if api_key:
+        resource_server_url = HTTP_URL_ADAPTER.validate_python(f"http://{host}:{port}")
+        auth_settings = AuthSettings(
+            issuer_url=resource_server_url,
+            resource_server_url=resource_server_url,
+            required_scopes=["sandbox:run"],
+        )
+    allowed_hosts = [
+        host,
+        f"{host}:{port}",
+        "localhost",
+        f"localhost:{port}",
+        "127.0.0.1",
+        f"127.0.0.1:{port}",
+    ]
+    configured_allowed_hosts = [
+        item.strip() for item in os.getenv("SANDBOX_ALLOWED_HOSTS", "").split(",") if item.strip()
+    ]
+    allowed_hosts.extend(configured_allowed_hosts)
+    transport_security = TransportSecuritySettings(allowed_hosts=sorted(set(allowed_hosts)))
 
     mcp = FastMCP(
         "mcp-code-sandbox",
         host=host,
         port=port,
         token_verifier=token_verifier,
+        auth=auth_settings,
         stateless_http=True,
+        json_response=True,
+        transport_security=transport_security,
     )
     tools = SandboxTools()
 
