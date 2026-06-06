@@ -1,0 +1,21 @@
+services:
+  sandbox-python:
+    build:
+      context: .
+      dockerfile: images/Dockerfile.python
+    image: mcp-sandbox-python:local
+    profiles: ["build"]
+
+  sandbox-node:
+    build:
+      context: .
+      dockerfile: images/Dockerfile.node
+    image: mcp-sandbox-node:local
+    profiles: ["build"]
+
+  sandbox-java:
+    build:
+      context: .
+      dockerfile: images/Dockerfile.java
+    image: mcp-sandbox-java:local
+    profiles: ["build"]
