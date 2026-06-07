@@ -142,7 +142,9 @@ class TestRunProject:
     def test_multifile_node(self, sandbox: DockerSandbox) -> None:
         files = {
             "main.js": "const { greet } = require('./lib/greet');\nconsole.log(greet('world'));\n",
-            "lib/greet.js": "function greet(name) { return `hello ${name}`; }\nmodule.exports = { greet };\n",
+            "lib/greet.js": (
+                "function greet(name) { return `hello ${name}`; }\nmodule.exports = { greet };\n"
+            ),
         }
         result = sandbox.run_project("node", files)
         assert result.exit_code == 0
@@ -196,8 +198,7 @@ class TestSecurityConstraints:
 
     def test_can_write_to_tmp(self, sandbox: DockerSandbox) -> None:
         code = (
-            "open('/tmp/test.txt', 'w').write('persisted')\n"
-            "print(open('/tmp/test.txt').read())\n"
+            "open('/tmp/test.txt', 'w').write('persisted')\nprint(open('/tmp/test.txt').read())\n"
         )
         result = sandbox.run_code("python", code)
         assert result.exit_code == 0
