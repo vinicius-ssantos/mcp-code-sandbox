@@ -8,8 +8,7 @@ on:
 jobs:
   lint:
     name: Lint (ruff + mypy)
-    # Fork PRs must not run on the self-hosted runner (untrusted code).
-    runs-on: ${{ github.event.pull_request.head.repo.fork == true && 'ubuntu-latest' || fromJSON('["self-hosted", "linux", "x64", "python-ci"]') }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
