@@ -20,6 +20,13 @@ services:
     image: mcp-sandbox-java:local
     profiles: ["build"]
 
+  sandbox-bash:
+    build:
+      context: .
+      dockerfile: images/Dockerfile.bash
+    image: mcp-sandbox-bash:local
+    profiles: ["build"]
+
   mcp-code-sandbox:
     build:
       context: .
