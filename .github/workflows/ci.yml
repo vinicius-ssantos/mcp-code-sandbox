@@ -73,7 +73,12 @@ jobs:
           python3 -m pip install -r requirements-dev.txt
 
       - name: Build sandbox images
-        run: docker compose --profile build build
+        run: |
+          if docker compose version >/dev/null 2>&1; then
+            docker compose --profile build build
+          else
+            docker-compose --profile build build
+          fi
 
       - name: pytest (integration)
         run: python3 -m pytest tests/ -v -m integration
