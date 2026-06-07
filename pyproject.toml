@@ -1,6 +1,9 @@
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+    "integration: tests that require a live Docker daemon and sandbox images",
+]
 
 [tool.ruff]
 line-length = 100

@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+jobs:
+  lint:
+    name: Lint (ruff + mypy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r server/requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: ruff lint
+        run: ruff check server/ tests/
+
+      - name: ruff format check
+        run: ruff format --check server/ tests/
+
+      - name: mypy
+        run: mypy server/
+
+  unit-tests:
+    name: Unit tests
+    # Unit tests mock Docker and do not require the daemon; safe on any runner,
+    # including fork PRs.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r server/requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: pytest (unit)
+        run: pytest tests/ -v -m "not integration"
+
+  integration-tests:
+    name: Integration tests (Docker)
+    # Integration tests spawn real sandbox containers and require Docker on the
+    # host. Skipped for fork PRs — untrusted code must not run on the
+    # self-hosted runner.
+    if: github.event.pull_request.head.repo.fork != true
+    runs-on: [self-hosted, linux, x64, python-ci]
+    steps:
+      - uses: actions/checkout@v4
+
+      # Python is pre-installed on the self-hosted runner; setup-python is not
+      # used here because its version manifest does not cover the runner's OS.
+      - name: Install dependencies
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install -r server/requirements.txt
+          python3 -m pip install -r requirements-dev.txt
+
+      - name: Build sandbox images
+        run: |
+          if docker compose version >/dev/null 2>&1; then
+            docker compose --profile build build
+          else
+            docker-compose --profile build build
+          fi
+
+      - name: pytest (integration)
+        run: python3 -m pytest tests/ -v -m integration
