@@ -14,6 +14,7 @@ TIMEOUT_SECONDS = 30
 MEMORY_LIMIT = "256m"
 CPU_PERIOD = 100_000
 CPU_QUOTA = 50_000
+PIDS_LIMIT = 128
 TMPFS = {"/tmp": "rw,size=64m,mode=1777"}
 LOGGER = logging.getLogger("mcp_code_sandbox.sandbox")
 
@@ -21,7 +22,7 @@ IMAGES = {
     "python": "mcp-sandbox-python:local",
     "node": "mcp-sandbox-node:local",
     "java": "mcp-sandbox-java:local",
-    "bash": "mcp-sandbox-python:local",
+    "bash": "mcp-sandbox-bash:local",
 }
 
 FILE_NAMES = {
@@ -147,6 +148,9 @@ class DockerSandbox:
                 memswap_limit=MEMORY_LIMIT,
                 cpu_period=CPU_PERIOD,
                 cpu_quota=CPU_QUOTA,
+                pids_limit=PIDS_LIMIT,
+                cap_drop=["ALL"],
+                security_opt=["no-new-privileges"],
                 user="sandbox",
             )
 
@@ -233,6 +237,9 @@ class DockerSandbox:
                 memswap_limit=MEMORY_LIMIT,
                 cpu_period=CPU_PERIOD,
                 cpu_quota=CPU_QUOTA,
+                pids_limit=PIDS_LIMIT,
+                cap_drop=["ALL"],
+                security_opt=["no-new-privileges"],
                 user="sandbox",
             )
             helper.start()

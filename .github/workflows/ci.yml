@@ -6,6 +6,21 @@ on:
   pull_request:
 
 jobs:
+  hadolint:
+    name: Lint Dockerfiles (hadolint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install hadolint
+        run: |
+          wget -qO /usr/local/bin/hadolint \
+            https://github.com/hadolint/hadolint/releases/latest/download/hadolint-Linux-x86_64
+          chmod +x /usr/local/bin/hadolint
+
+      - name: Run hadolint
+        run: find . -name "Dockerfile*" -not -path "./.git/*" | sort | xargs hadolint
+
   lint:
     name: Lint (ruff + mypy)
     runs-on: ubuntu-latest
