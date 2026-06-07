@@ -26,7 +26,7 @@ The server executes arbitrary code provided by an AI client inside Docker contai
 | Execution timeout | 30 seconds | Server kills container after timeout |
 | User | Non-root `sandbox` user in image | Limits damage from container escape |
 | Privileged | Not set | No elevated capabilities |
-| Volume mounts | Bind-mount of code dir as read-only | Code is readable, host FS is not writable |
+| Volume mounts | Ephemeral Docker volume mounted read-only into the sandbox container | Code is readable, no host path is exposed to the container |
 
 ### Server authentication
 
