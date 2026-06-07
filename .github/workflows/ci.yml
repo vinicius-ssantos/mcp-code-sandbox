@@ -53,7 +53,7 @@ jobs:
           pip install -r requirements-dev.txt
 
       - name: pytest (unit)
-        run: pytest tests/ -v
+        run: pytest tests/ -v -m "not integration"
 
   integration-tests:
     name: Integration tests (Docker)
