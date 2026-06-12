@@ -433,16 +433,23 @@ class DockerSandbox:
             try:
                 bits, _ = container.get_archive(path)
                 buf = io.BytesIO()
+                total = 0
+                oversized = False
                 for chunk in bits:
+                    total += len(chunk)
+                    if total > MAX_OUTPUT_BYTES:
+                        oversized = True
+                        LOGGER.warning("sandbox_output_file_too_large", extra={"path": path})
+                        break
                     buf.write(chunk)
-                buf.seek(0)
-                with tarfile.open(fileobj=buf) as tar:
-                    for member in tar.getmembers():
-                        if member.isfile():
-                            f = tar.extractfile(member)
-                            if f:
-                                key = PurePosixPath(path).name
-                                artifacts[key] = base64.b64encode(f.read()).decode()
+                if not oversized:
+                    buf.seek(0)
+                    with tarfile.open(fileobj=buf) as tar:
+                        for member in tar.getmembers():
+                            if member.isfile():
+                                f = tar.extractfile(member)
+                                if f:
+                                    artifacts[path] = base64.b64encode(f.read()).decode()
             except self._docker_exception:
                 LOGGER.debug("sandbox_output_file_missing", extra={"path": path})
         return artifacts
@@ -531,8 +538,11 @@ def validate_output_paths(paths: list[str]) -> list[str]:
             f"Too many output files: {len(paths)} (limit: {MAX_OUTPUT_FILES})"
         )
     for path in paths:
-        if ".." in PurePosixPath(path).parts:
+        p = PurePosixPath(path)
+        if ".." in p.parts:
             raise InvalidProjectFileError(f"Unsafe output path: {path!r}")
+        if not path.startswith("/tmp/"):
+            raise InvalidProjectFileError(f"Output path must be under /tmp/: {path!r}")
     return list(paths)
 
 

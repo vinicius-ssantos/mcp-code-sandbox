@@ -17,6 +17,7 @@ from server.sandbox import (
     build_tar,
     normalize_language,
     truncate_output,
+    validate_output_paths,
     validate_project_files,
 )
 
@@ -204,6 +205,59 @@ def test_gc_labels_are_applied_to_containers_create():
 
     create_kwargs = mock_client.containers.create.call_args.kwargs
     assert create_kwargs.get("labels") == {"managed-by": "mcp-code-sandbox"}
+
+
+def test_validate_output_paths_rejects_non_tmp_path():
+    with pytest.raises(InvalidProjectFileError, match="must be under /tmp/"):
+        validate_output_paths(["/etc/passwd"])
+
+
+def test_validate_output_paths_rejects_root_path():
+    with pytest.raises(InvalidProjectFileError, match="must be under /tmp/"):
+        validate_output_paths(["/"])
+
+
+def test_validate_output_paths_accepts_tmp_path():
+    result = validate_output_paths(["/tmp/result.csv"])
+    assert result == ["/tmp/result.csv"]
+
+
+def test_validate_output_paths_keyed_by_full_path():
+    """Two /tmp files with the same basename must produce distinct keys."""
+    result = validate_output_paths(["/tmp/a/out.txt", "/tmp/b/out.txt"])
+    assert result == ["/tmp/a/out.txt", "/tmp/b/out.txt"]
+
+
+def _make_tar_bytes(filename: str, content: bytes) -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tar:
+        info = tarfile.TarInfo(name=filename)
+        info.size = len(content)
+        tar.addfile(info, io.BytesIO(content))
+    return buf.getvalue()
+
+
+def test_read_output_files_keys_by_requested_path():
+    """The response dict must use the original requested path, not the basename."""
+    sandbox, mock_client = _make_sandbox_with_mock_client()
+    mock_container = MagicMock()
+    tar_a = _make_tar_bytes("out.txt", b"from_a")
+    tar_b = _make_tar_bytes("out.txt", b"from_b")
+    mock_container.get_archive.side_effect = [
+        (iter([tar_a]), {}),
+        (iter([tar_b]), {}),
+    ]
+    result = sandbox._read_output_files(mock_container, ["/tmp/a/out.txt", "/tmp/b/out.txt"])
+    assert set(result.keys()) == {"/tmp/a/out.txt", "/tmp/b/out.txt"}
+
+
+def test_read_output_files_skips_oversized_archive(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(sb, "MAX_OUTPUT_BYTES", 4)
+    sandbox, mock_client = _make_sandbox_with_mock_client()
+    mock_container = MagicMock()
+    mock_container.get_archive.return_value = (iter([b"x" * 100]), {})
+    result = sandbox._read_output_files(mock_container, ["/tmp/big.bin"])
+    assert result == {}
 
 
 def test_kill_race_condition_does_not_raise_when_container_already_stopped():
