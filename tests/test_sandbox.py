@@ -260,6 +260,23 @@ def test_read_output_files_skips_oversized_archive(monkeypatch: pytest.MonkeyPat
     assert result == {}
 
 
+def test_wait_timeout_surfaced_as_connection_error_is_treated_as_timeout():
+    """requests >= 2.32 raises ConnectionError (not ReadTimeout) when the wait
+    HTTP call times out while streaming the response body."""
+    sandbox, mock_client = _make_sandbox_with_mock_client()
+    mock_container = MagicMock()
+    mock_container.wait.side_effect = requests.exceptions.ConnectionError("Read timed out.")
+    mock_container.attrs = {"State": {"OOMKilled": False}}
+    mock_container.logs.return_value = iter([])
+    mock_client.containers.create.return_value = mock_container
+
+    result = sandbox._run_container_locked("python", ["python", "/workspace/main.py"], {}, {}, [])
+
+    assert result.timed_out is True
+    assert result.exit_code == 124
+    mock_container.kill.assert_called_once()
+
+
 def test_kill_race_condition_does_not_raise_when_container_already_stopped():
     """If kill() fails because the container stopped just before the call,
     the execution should complete normally with the container's real exit code."""

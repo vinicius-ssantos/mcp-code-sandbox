@@ -303,7 +303,9 @@ class DockerSandbox:
             try:
                 wait_result = container.wait(timeout=TIMEOUT_SECONDS)
                 exit_code = int(wait_result.get("StatusCode") or 0)
-            except requests.exceptions.ReadTimeout:
+            except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectionError):
+                # requests >= 2.32 surfaces the read timeout while streaming the
+                # response body as ConnectionError instead of ReadTimeout.
                 timed_out = True
                 exit_code = 124
                 try:
