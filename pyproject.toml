@@ -22,6 +22,10 @@ module = ["docker.*", "requests.*", "dotenv.*", "mcp.*", "pydantic.*", "starlett
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]
+module = "server.main"
+disable_error_code = ["untyped-decorator"]
+
+[[tool.mypy.overrides]]
 module = "prometheus_client"
 ignore_missing_imports = true
 
