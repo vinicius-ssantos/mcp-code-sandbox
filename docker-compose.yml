@@ -31,7 +31,7 @@ services:
   # host socket; the server reaches the daemon over TCP with access limited to
   # the container/volume endpoints it actually needs. Not exposed on the host.
   docker-socket-proxy:
-    image: tecnativa/docker-socket-proxy:0.3.0@sha256:9e4b9e7517a6b660f2cc903a19b257b1852d5b3344794e3ea334ff00ae677ac2
+    image: tecnativa/docker-socket-proxy:v0.4.2@sha256:1f3a6f303320723d199d2316a3e82b2e2685d86c275d5e3deeaf182573b47476
     profiles: ["server"]
     environment:
       CONTAINERS: 1
