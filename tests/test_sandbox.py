@@ -13,11 +13,32 @@ from server.sandbox import (
     InvalidProjectFileError,
     SandboxBusyError,
     UnsupportedLanguageError,
+    _env_str,
     build_tar,
     normalize_language,
     truncate_output,
     validate_project_files,
 )
+
+
+def test_env_str_returns_default_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("SANDBOX_MEMORY_LIMIT", raising=False)
+    assert _env_str("SANDBOX_MEMORY_LIMIT", "256m") == "256m"
+
+
+def test_env_str_returns_env_value_when_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SANDBOX_MEMORY_LIMIT", "512m")
+    assert _env_str("SANDBOX_MEMORY_LIMIT", "256m") == "512m"
+
+
+def test_env_str_strips_whitespace(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SANDBOX_MEMORY_LIMIT", "  512m  ")
+    assert _env_str("SANDBOX_MEMORY_LIMIT", "256m") == "512m"
+
+
+def test_env_str_falls_back_to_default_for_blank_value(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SANDBOX_MEMORY_LIMIT", "   ")
+    assert _env_str("SANDBOX_MEMORY_LIMIT", "256m") == "256m"
 
 
 def test_normalize_language_accepts_supported_language_case_insensitive():

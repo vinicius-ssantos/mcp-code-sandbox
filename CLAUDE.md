@@ -71,14 +71,17 @@ tests/              Unit tests for pure sandbox behavior
 
 All runtime limits live near the top of `server/sandbox.py`:
 
-- `TIMEOUT_SECONDS`
-- `MEMORY_LIMIT`
-- `CPU_PERIOD`
-- `CPU_QUOTA`
-- `TMPFS`
-- `MAX_OUTPUT_BYTES` (env: `SANDBOX_MAX_OUTPUT_BYTES`)
+All of the following are configurable via environment variables (defaults shown):
+
+- `TIMEOUT_SECONDS=30` (env: `SANDBOX_TIMEOUT_SECONDS`)
+- `MEMORY_LIMIT=256m` (env: `SANDBOX_MEMORY_LIMIT`)
+- `CPU_PERIOD=100000` (env: `SANDBOX_CPU_PERIOD`)
+- `CPU_QUOTA=50000` (env: `SANDBOX_CPU_QUOTA`)
+- `PIDS_LIMIT=128` (env: `SANDBOX_PIDS_LIMIT`)
+- `TMPFS` — not env-configurable; edit the constant directly
+- `MAX_OUTPUT_BYTES` (env: `SANDBOX_MAX_OUTPUT_BYTES`, default 1 MiB)
 - `MAX_PROJECT_FILES` / `MAX_PROJECT_BYTES` (env: `SANDBOX_MAX_PROJECT_FILES`, `SANDBOX_MAX_PROJECT_BYTES`)
-- `MAX_CONCURRENT_EXECUTIONS` (env: `SANDBOX_MAX_CONCURRENT`)
+- `MAX_CONCURRENT_EXECUTIONS` (env: `SANDBOX_MAX_CONCURRENT`, default 4)
 
 Do not raise these without updating the security rationale in ADR 0004.
 

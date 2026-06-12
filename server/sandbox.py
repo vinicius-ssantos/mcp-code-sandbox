@@ -9,7 +9,7 @@ import time
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import PurePosixPath
 from typing import Any
 
 import requests.exceptions
@@ -28,11 +28,18 @@ def _env_int(name: str, default: int) -> int:
     return value
 
 
-TIMEOUT_SECONDS = 30
-MEMORY_LIMIT = "256m"
-CPU_PERIOD = 100_000
-CPU_QUOTA = 50_000
-PIDS_LIMIT = 128
+def _env_str(name: str, default: str) -> str:
+    raw = os.getenv(name)
+    return raw.strip() if raw and raw.strip() else default
+
+
+# Docker resource limits — configurable via env vars.
+# Do NOT raise these defaults without updating the security rationale in ADR 0004.
+TIMEOUT_SECONDS = _env_int("SANDBOX_TIMEOUT_SECONDS", 30)
+MEMORY_LIMIT = _env_str("SANDBOX_MEMORY_LIMIT", "256m")
+CPU_PERIOD = _env_int("SANDBOX_CPU_PERIOD", 100_000)
+CPU_QUOTA = _env_int("SANDBOX_CPU_QUOTA", 50_000)
+PIDS_LIMIT = _env_int("SANDBOX_PIDS_LIMIT", 128)
 TMPFS = {"/tmp": "rw,size=64m,mode=1777"}
 # Caps on data crossing the host/sandbox boundary. See ADR 0004 before raising.
 MAX_OUTPUT_BYTES = _env_int("SANDBOX_MAX_OUTPUT_BYTES", 1_048_576)
@@ -447,10 +454,3 @@ def build_tar(files: Mapping[str, str]) -> bytes:
             tar.addfile(info, io.BytesIO(encoded))
     buffer.seek(0)
     return buffer.read()
-
-
-def materialize_workspace(root: Path, files: Mapping[str, str]) -> None:
-    for relative_path, content in files.items():
-        destination = root / relative_path
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text(content, encoding="utf-8")
