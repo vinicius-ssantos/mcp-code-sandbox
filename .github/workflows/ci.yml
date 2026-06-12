@@ -98,20 +98,23 @@ jobs:
   integration-tests:
     name: Integration tests (Docker)
     # Integration tests spawn real sandbox containers and require Docker on the
-    # host. Skipped for fork PRs — untrusted code must not run on the
-    # self-hosted runner.
+    # host. Keep this on GitHub-hosted runners unless the dedicated
+    # python-docker-ci self-hosted runner is online and validated.
     if: github.event.pull_request.head.repo.fork != true
-    runs-on: [self-hosted, linux, x64, python-ci]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
-      # Python is pre-installed on the self-hosted runner; setup-python is not
-      # used here because its version manifest does not cover the runner's OS.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
       - name: Install dependencies
         run: |
-          python3 -m pip install --upgrade pip
-          python3 -m pip install -r server/requirements.txt
-          python3 -m pip install -r requirements-dev.txt
+          python -m pip install --upgrade pip
+          python -m pip install -r server/requirements.txt
+          python -m pip install -r requirements-dev.txt
 
       - name: Build sandbox images
         run: |
@@ -122,4 +125,4 @@ jobs:
           fi
 
       - name: pytest (integration)
-        run: python3 -m pytest tests/ -v -m integration
+        run: python -m pytest tests/ -v -m integration
