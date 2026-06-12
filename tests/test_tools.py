@@ -110,3 +110,8 @@ class TestApiKeyTokenVerifier:
         verifier = ApiKeyTokenVerifier("secret-key")
         token = asyncio.run(verifier.verify_token(""))
         assert token is None
+
+    def test_non_ascii_token_returns_none_instead_of_raising(self) -> None:
+        verifier = ApiKeyTokenVerifier("secret-key")
+        token = asyncio.run(verifier.verify_token("chavé-inválida"))
+        assert token is None

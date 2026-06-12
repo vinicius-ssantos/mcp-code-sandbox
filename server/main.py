@@ -24,7 +24,9 @@ class ApiKeyTokenVerifier:
         self._api_key = api_key
 
     async def verify_token(self, token: str) -> AccessToken | None:
-        if compare_digest(token, self._api_key):
+        # Compare bytes: compare_digest on str rejects non-ASCII input with a
+        # TypeError, which would turn a bad token into a 500 instead of a 401.
+        if compare_digest(token.encode("utf-8"), self._api_key.encode("utf-8")):
             return AccessToken(
                 token=token,
                 client_id="mcp-code-sandbox-client",

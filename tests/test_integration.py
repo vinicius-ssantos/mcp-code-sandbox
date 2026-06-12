@@ -165,6 +165,19 @@ def test_timeout_returns_124(sandbox: DockerSandbox, monkeypatch: pytest.MonkeyP
 
 
 # ---------------------------------------------------------------------------
+# Output truncation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_large_output_is_truncated(sandbox: DockerSandbox, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sb, "MAX_OUTPUT_BYTES", 1024)
+    result = sandbox.run_code("python", "print('x' * 100_000)")
+    assert result.output_truncated is True
+    assert len(result.stdout.encode("utf-8")) <= 1024
+
+
+# ---------------------------------------------------------------------------
 # Security constraints
 # ---------------------------------------------------------------------------
 

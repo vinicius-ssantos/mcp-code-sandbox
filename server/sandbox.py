@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import io
 import logging
+import os
 import tarfile
+import threading
 import time
 import uuid
 from collections.abc import Mapping
@@ -10,12 +12,32 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer, got {raw!r}") from exc
+    if value <= 0:
+        raise ValueError(f"{name} must be positive, got {value}")
+    return value
+
+
 TIMEOUT_SECONDS = 30
 MEMORY_LIMIT = "256m"
 CPU_PERIOD = 100_000
 CPU_QUOTA = 50_000
 PIDS_LIMIT = 128
 TMPFS = {"/tmp": "rw,size=64m,mode=1777"}
+# Caps on data crossing the host/sandbox boundary. See ADR 0004 before raising.
+MAX_OUTPUT_BYTES = _env_int("SANDBOX_MAX_OUTPUT_BYTES", 1_048_576)
+MAX_PROJECT_FILES = _env_int("SANDBOX_MAX_PROJECT_FILES", 64)
+MAX_PROJECT_BYTES = _env_int("SANDBOX_MAX_PROJECT_BYTES", 8_388_608)
+MAX_CONCURRENT_EXECUTIONS = _env_int("SANDBOX_MAX_CONCURRENT", 4)
+EXECUTION_QUEUE_TIMEOUT_SECONDS = _env_int("SANDBOX_QUEUE_TIMEOUT_SECONDS", 30)
 LOGGER = logging.getLogger("mcp_code_sandbox.sandbox")
 
 IMAGES = {
@@ -58,12 +80,17 @@ class InvalidProjectFileError(SandboxError):
     """Raised when a project file path is unsafe or invalid."""
 
 
+class SandboxBusyError(SandboxError):
+    """Raised when the concurrent execution limit is reached."""
+
+
 @dataclass(frozen=True)
 class ExecutionResult:
     stdout: str
     stderr: str
     exit_code: int
     timed_out: bool = False
+    output_truncated: bool = False
 
     def format_for_mcp(self) -> str:
         parts: list[str] = []
@@ -74,6 +101,8 @@ class ExecutionResult:
         parts.append(f"exit_code: {self.exit_code}")
         if self.timed_out:
             parts.append("status: timed_out")
+        if self.output_truncated:
+            parts.append("status: output_truncated")
         return "\n\n".join(parts)
 
 
@@ -89,6 +118,7 @@ class DockerSandbox:
 
         self._docker_exception = docker.errors.DockerException
         self._client = docker.from_env()
+        self._semaphore = threading.BoundedSemaphore(MAX_CONCURRENT_EXECUTIONS)
 
     def run_code(self, language: str, code: str) -> ExecutionResult:
         language = normalize_language(language)
@@ -109,6 +139,26 @@ class DockerSandbox:
         return self._run_container(language, run_command, safe_files)
 
     def _run_container(
+        self,
+        language: str,
+        command: list[str],
+        files: Mapping[str, str],
+    ) -> ExecutionResult:
+        if not self._semaphore.acquire(timeout=EXECUTION_QUEUE_TIMEOUT_SECONDS):
+            LOGGER.warning(
+                "sandbox_execution_rejected_busy",
+                extra={"language": language, "max_concurrent": MAX_CONCURRENT_EXECUTIONS},
+            )
+            raise SandboxBusyError(
+                f"Sandbox is at capacity ({MAX_CONCURRENT_EXECUTIONS} concurrent executions). "
+                "Retry shortly."
+            )
+        try:
+            return self._run_container_locked(language, command, files)
+        finally:
+            self._semaphore.release()
+
+    def _run_container_locked(
         self,
         language: str,
         command: list[str],
@@ -172,8 +222,8 @@ class DockerSandbox:
                     break
                 time.sleep(0.1)
 
-            stdout = container.logs(stdout=True, stderr=False).decode("utf-8", errors="replace")
-            stderr = container.logs(stdout=False, stderr=True).decode("utf-8", errors="replace")
+            stdout, stdout_truncated = self._read_logs(container, stdout=True, stderr=False)
+            stderr, stderr_truncated = self._read_logs(container, stdout=False, stderr=True)
             LOGGER.info(
                 "sandbox_execution_finish",
                 extra={
@@ -185,6 +235,7 @@ class DockerSandbox:
                     "duration_ms": int((time.monotonic() - started_at) * 1000),
                     "stdout_bytes": len(stdout.encode("utf-8")),
                     "stderr_bytes": len(stderr.encode("utf-8")),
+                    "output_truncated": stdout_truncated or stderr_truncated,
                 },
             )
             return ExecutionResult(
@@ -192,8 +243,10 @@ class DockerSandbox:
                 stderr=stderr,
                 exit_code=exit_code,
                 timed_out=timed_out,
+                output_truncated=stdout_truncated or stderr_truncated,
             )
         except self._docker_exception as exc:
+            error_id = uuid.uuid4().hex[:12]
             LOGGER.exception(
                 "sandbox_execution_error",
                 extra={
@@ -202,9 +255,12 @@ class DockerSandbox:
                     "container_name": container_name,
                     "duration_ms": int((time.monotonic() - started_at) * 1000),
                     "error_type": exc.__class__.__name__,
+                    "error_id": error_id,
                 },
             )
-            raise SandboxError(f"Docker sandbox failed: {exc}") from exc
+            # The daemon error may contain host paths and infra details; log it
+            # but return only an opaque correlation id to the MCP client.
+            raise SandboxError(f"Docker sandbox failed (error_id={error_id})") from exc
         finally:
             if container is not None:
                 try:
@@ -216,6 +272,18 @@ class DockerSandbox:
                     workspace_volume.remove(force=True)
                 except self._docker_exception:
                     pass
+
+    def _read_logs(self, container: Any, *, stdout: bool, stderr: bool) -> tuple[str, bool]:
+        """Read one log stream, stopping early once MAX_OUTPUT_BYTES is exceeded."""
+        buffer = bytearray()
+        truncated = False
+        for chunk in container.logs(stdout=stdout, stderr=stderr, stream=True):
+            buffer.extend(chunk)
+            if len(buffer) > MAX_OUTPUT_BYTES:
+                truncated = True
+                break
+        text, chunk_truncated = truncate_output(bytes(buffer))
+        return text, truncated or chunk_truncated
 
     def _create_workspace_volume(self, image: str, files: Mapping[str, str]) -> Any:
         volume_name = f"mcp-code-sandbox-workspace-{uuid.uuid4().hex}"
@@ -267,15 +335,30 @@ def normalize_language(language: str) -> str:
     return normalized
 
 
+def truncate_output(data: bytes) -> tuple[str, bool]:
+    truncated = len(data) > MAX_OUTPUT_BYTES
+    if truncated:
+        data = data[:MAX_OUTPUT_BYTES]
+    return data.decode("utf-8", errors="replace"), truncated
+
+
 def validate_project_files(files: Mapping[str, str]) -> dict[str, str]:
     if not files:
         raise InvalidProjectFileError("At least one file is required")
+    if len(files) > MAX_PROJECT_FILES:
+        raise InvalidProjectFileError(f"Too many files: {len(files)} (limit: {MAX_PROJECT_FILES})")
 
     safe_files: dict[str, str] = {}
+    total_bytes = 0
     for raw_path, content in files.items():
         path = PurePosixPath(raw_path.replace("\\", "/"))
         if path.is_absolute() or ".." in path.parts or not path.name:
             raise InvalidProjectFileError(f"Unsafe file path: {raw_path!r}")
+        total_bytes += len(content.encode("utf-8"))
+        if total_bytes > MAX_PROJECT_BYTES:
+            raise InvalidProjectFileError(
+                f"Project too large: exceeds {MAX_PROJECT_BYTES} bytes total"
+            )
         safe_files[str(path)] = content
     return safe_files
 

@@ -76,6 +76,9 @@ All runtime limits live near the top of `server/sandbox.py`:
 - `CPU_PERIOD`
 - `CPU_QUOTA`
 - `TMPFS`
+- `MAX_OUTPUT_BYTES` (env: `SANDBOX_MAX_OUTPUT_BYTES`)
+- `MAX_PROJECT_FILES` / `MAX_PROJECT_BYTES` (env: `SANDBOX_MAX_PROJECT_FILES`, `SANDBOX_MAX_PROJECT_BYTES`)
+- `MAX_CONCURRENT_EXECUTIONS` (env: `SANDBOX_MAX_CONCURRENT`)
 
 Do not raise these without updating the security rationale in ADR 0004.
 

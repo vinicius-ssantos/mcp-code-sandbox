@@ -27,23 +27,39 @@ services:
     image: mcp-sandbox-bash:local
     profiles: ["build"]
 
+  # Least-privilege gateway to the Docker daemon. Only the proxy touches the
+  # host socket; the server reaches the daemon over TCP with access limited to
+  # the container/volume endpoints it actually needs. Not exposed on the host.
+  docker-socket-proxy:
+    image: tecnativa/docker-socket-proxy:0.3.0@sha256:9e4b9e7517a6b660f2cc903a19b257b1852d5b3344794e3ea334ff00ae677ac2
+    profiles: ["server"]
+    environment:
+      CONTAINERS: 1
+      VOLUMES: 1
+      POST: 1
+      ALLOW_START: 1
+      ALLOW_RESTARTS: 1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
   mcp-code-sandbox:
     build:
       context: .
       dockerfile: Dockerfile.server
     image: mcp-code-sandbox-server:local
     profiles: ["server"]
+    depends_on:
+      - docker-socket-proxy
     ports:
       - "8766:8766"
     environment:
+      DOCKER_HOST: tcp://docker-socket-proxy:2375
       SANDBOX_API_KEY: ${SANDBOX_API_KEY}
       SANDBOX_TRANSPORT: streamable-http
       SANDBOX_HOST: 0.0.0.0
       SANDBOX_PORT: 8766
       SANDBOX_ALLOWED_HOSTS: mcp-code-sandbox:8766,localhost:8766,127.0.0.1:8766,host.docker.internal:8766
       SANDBOX_LOG_LEVEL: INFO
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import socket; s=socket.create_connection(('localhost', 8766), timeout=3); s.close()\""]
       interval: 10s
