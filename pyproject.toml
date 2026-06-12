@@ -18,5 +18,17 @@ strict = true
 files = ["server"]
 
 [[tool.mypy.overrides]]
-module = ["docker.*"]
+module = ["docker.*", "requests.*", "dotenv.*", "mcp.*", "pydantic.*", "starlette.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "server.main"
+disable_error_code = ["untyped-decorator"]
+
+[[tool.mypy.overrides]]
+module = "prometheus_client"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "prometheus_client.*"
 ignore_missing_imports = true

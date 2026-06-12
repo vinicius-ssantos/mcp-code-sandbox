@@ -1,3 +1,4 @@
 mcp>=1.9.0,<2
 docker>=7.1.0,<8
 python-dotenv>=1.0.1,<2
+prometheus-client>=0.20.0,<1

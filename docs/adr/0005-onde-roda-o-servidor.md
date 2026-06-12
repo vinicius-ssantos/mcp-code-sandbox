@@ -14,7 +14,9 @@ The MCP server needs to manage Docker containers. Two deployment options were co
 
 Run the server on the host (option 1) by default.
 
-For local `personal-platform-infra` Compose development, a containerized server image is allowed as an explicit exception. That service mounts `/var/run/docker.sock` and must only be used in trusted local development.
+For local `personal-platform-infra` Compose development, a containerized server image is allowed as an explicit exception, and must only be used in trusted local development.
+
+**Update 2026-06-12:** the containerized exception no longer mounts `/var/run/docker.sock` into the server. The Compose stack adds a `docker-socket-proxy` sidecar that holds the only (read-only) socket mount and exposes a filtered daemon API (`CONTAINERS`, `VOLUMES`, `POST`, `ALLOW_START`, `ALLOW_RESTARTS`) over an internal network. The server connects via `DOCKER_HOST=tcp://docker-socket-proxy:2375` and runs as a non-root user.
 
 ## Reasons
 

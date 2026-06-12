@@ -35,17 +35,19 @@ class TestRunCode:
     def test_delegates_to_sandbox(self, tools: SandboxTools, mock_sandbox: MagicMock) -> None:
         mock_sandbox.run_code.return_value = _ok("2\n")
         result = tools.run_code("python", "print(1+1)")
-        mock_sandbox.run_code.assert_called_once_with("python", "print(1+1)")
-        assert "2" in result
-        assert "exit_code: 0" in result
+        mock_sandbox.run_code.assert_called_once_with(
+            "python", "print(1+1)", env=None, output_files=None
+        )
+        assert "2" in result["stdout"]
+        assert result["exit_code"] == 0
 
     def test_sandbox_error_returns_exit_1(
         self, tools: SandboxTools, mock_sandbox: MagicMock
     ) -> None:
         mock_sandbox.run_code.side_effect = SandboxError("Docker exploded")
         result = tools.run_code("python", "code")
-        assert "exit_code: 1" in result
-        assert "Docker exploded" in result
+        assert result["exit_code"] == 1
+        assert "Docker exploded" in result["stderr"]
 
 
 # ---------------------------------------------------------------------------
@@ -57,15 +59,15 @@ class TestRunCommand:
     def test_delegates_to_sandbox(self, tools: SandboxTools, mock_sandbox: MagicMock) -> None:
         mock_sandbox.run_command.return_value = _ok("hello\n")
         result = tools.run_command("echo hello")
-        mock_sandbox.run_command.assert_called_once_with("echo hello")
-        assert "hello" in result
+        mock_sandbox.run_command.assert_called_once_with("echo hello", env=None, output_files=None)
+        assert "hello" in result["stdout"]
 
     def test_sandbox_error_returns_exit_1(
         self, tools: SandboxTools, mock_sandbox: MagicMock
     ) -> None:
         mock_sandbox.run_command.side_effect = SandboxError("failed")
         result = tools.run_command("bad")
-        assert "exit_code: 1" in result
+        assert result["exit_code"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -78,15 +80,17 @@ class TestRunFile:
         files = {"main.py": "print('hi')"}
         mock_sandbox.run_project.return_value = _ok("hi\n")
         result = tools.run_file("python", files)
-        mock_sandbox.run_project.assert_called_once_with("python", files)
-        assert "hi" in result
+        mock_sandbox.run_project.assert_called_once_with(
+            "python", files, env=None, output_files=None
+        )
+        assert "hi" in result["stdout"]
 
     def test_sandbox_error_returns_exit_1(
         self, tools: SandboxTools, mock_sandbox: MagicMock
     ) -> None:
         mock_sandbox.run_project.side_effect = SandboxError("oops")
         result = tools.run_file("python", {"main.py": "x"})
-        assert "exit_code: 1" in result
+        assert result["exit_code"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -109,4 +113,9 @@ class TestApiKeyTokenVerifier:
     def test_empty_token_returns_none(self) -> None:
         verifier = ApiKeyTokenVerifier("secret-key")
         token = asyncio.run(verifier.verify_token(""))
+        assert token is None
+
+    def test_non_ascii_token_returns_none_instead_of_raising(self) -> None:
+        verifier = ApiKeyTokenVerifier("secret-key")
+        token = asyncio.run(verifier.verify_token("chavé-inválida"))
         assert token is None

@@ -165,6 +165,71 @@ def test_timeout_returns_124(sandbox: DockerSandbox, monkeypatch: pytest.MonkeyP
 
 
 # ---------------------------------------------------------------------------
+# Output truncation
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_large_output_is_truncated(sandbox: DockerSandbox, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(sb, "MAX_OUTPUT_BYTES", 1024)
+    result = sandbox.run_code("python", "print('x' * 100_000)")
+    assert result.output_truncated is True
+    assert len(result.stdout.encode("utf-8")) <= 1024
+
+
+# ---------------------------------------------------------------------------
+# OOM kill
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_oom_kill_is_reported(sandbox: DockerSandbox) -> None:
+    # Allocate 300 MiB in a loop to make the kernel OOM-kill the process.
+    # The sandbox memory limit is 256m (swap disabled), so this reliably OOMs.
+    code = (
+        "import ctypes\n"
+        "buf = ctypes.create_string_buffer(300 * 1024 * 1024)\n"
+        "buf[0] = 1\n"
+        "print('should not reach')\n"
+    )
+    result = sandbox.run_code("python", code)
+    assert result.oom_killed is True
+    assert "status: oom_killed" in result.format_for_mcp()
+
+
+# ---------------------------------------------------------------------------
+# Startup GC
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_gc_on_init_removes_labelled_containers(sandbox: DockerSandbox) -> None:
+    import docker  # type: ignore[import-untyped]
+
+    client = docker.from_env()
+    # Create a dummy container with the managed-by label but don't clean it up.
+    dummy = client.containers.create(
+        "mcp-sandbox-python:local",
+        command=["true"],
+        labels={"managed-by": "mcp-code-sandbox"},
+        network_mode="none",
+    )
+    dummy_id = dummy.short_id
+
+    # Constructing a new DockerSandbox triggers GC.
+    from server.sandbox import DockerSandbox as DS
+
+    DS()
+
+    # The dummy container must be gone.
+    remaining_ids = [
+        c.short_id
+        for c in client.containers.list(all=True, filters={"label": "managed-by=mcp-code-sandbox"})
+    ]
+    assert dummy_id not in remaining_ids
+
+
+# ---------------------------------------------------------------------------
 # Security constraints
 # ---------------------------------------------------------------------------
 
