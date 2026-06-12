@@ -1,4 +1,4 @@
-FROM eclipse-temurin:21-jdk-jammy@sha256:801b7e1a9c4befaf82bf9a2a58025ef43a7694bbc84779187ad0524d84742772
+FROM eclipse-temurin:25-jdk-jammy@sha256:7bb4493421ff8fe7d0361d0518e5abf0026fc6ac774ecdf28bb6b90d4fd4c4f8
 
 RUN useradd --create-home --shell /usr/sbin/nologin sandbox \
     && mkdir -p /workspace \
