@@ -1,18 +1,22 @@
 from __future__ import annotations
 
+import base64
 import io
 import logging
 import os
+import re
 import tarfile
 import threading
 import time
 import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import PurePosixPath
 from typing import Any
 
 import requests.exceptions
+
+from .metrics import execution_duration_seconds, executions_total, output_bytes_total
 
 
 def _env_int(name: str, default: int) -> int:
@@ -47,7 +51,13 @@ MAX_PROJECT_FILES = _env_int("SANDBOX_MAX_PROJECT_FILES", 64)
 MAX_PROJECT_BYTES = _env_int("SANDBOX_MAX_PROJECT_BYTES", 8_388_608)
 MAX_CONCURRENT_EXECUTIONS = _env_int("SANDBOX_MAX_CONCURRENT", 4)
 EXECUTION_QUEUE_TIMEOUT_SECONDS = _env_int("SANDBOX_QUEUE_TIMEOUT_SECONDS", 30)
+MAX_ENV_VARS = _env_int("SANDBOX_MAX_ENV_VARS", 32)
+MAX_OUTPUT_FILES = _env_int("SANDBOX_MAX_OUTPUT_FILES", 16)
 LOGGER = logging.getLogger("mcp_code_sandbox.sandbox")
+
+_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_MAX_ENV_KEY_LEN = 128
+_MAX_ENV_VAL_LEN = 4096
 # Label applied to every container and volume so orphans left by a crash can be
 # identified and removed on the next server startup.
 _MANAGED_BY_LABEL = {"managed-by": "mcp-code-sandbox"}
@@ -59,6 +69,13 @@ IMAGES = {
     "node": "mcp-sandbox-node:local",
     "java": "mcp-sandbox-java:local",
     "bash": "mcp-sandbox-bash:local",
+}
+
+LANGUAGE_VERSIONS = {
+    "python": "3.12",
+    "node": "20",
+    "java": "21 (Eclipse Temurin)",
+    "bash": "5",
 }
 
 FILE_NAMES = {
@@ -106,6 +123,21 @@ class ExecutionResult:
     timed_out: bool = False
     output_truncated: bool = False
     oom_killed: bool = False
+    duration_ms: int = 0
+    # Keyed by filename; values are base64-encoded file contents.
+    output_files: dict[str, str] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "stdout": self.stdout,
+            "stderr": self.stderr,
+            "exit_code": self.exit_code,
+            "timed_out": self.timed_out,
+            "oom_killed": self.oom_killed,
+            "output_truncated": self.output_truncated,
+            "duration_ms": self.duration_ms,
+            "output_files": self.output_files,
+        }
 
     def format_for_mcp(self) -> str:
         parts: list[str] = []
@@ -138,31 +170,67 @@ class DockerSandbox:
         self._semaphore = threading.BoundedSemaphore(MAX_CONCURRENT_EXECUTIONS)
         self._gc_orphaned_resources()
 
-    def run_code(self, language: str, code: str) -> ExecutionResult:
-        language = normalize_language(language)
-        return self.run_project(language, {FILE_NAMES[language]: code})
+    def ping(self) -> bool:
+        """Return True if the Docker daemon is reachable."""
+        try:
+            self._client.ping()
+            return True
+        except self._docker_exception:
+            return False
 
-    def run_command(self, command: str) -> ExecutionResult:
-        return self._run_container("bash", ["bash", "-lc", command], {})
+    def run_code(
+        self,
+        language: str,
+        code: str,
+        *,
+        env: dict[str, str] | None = None,
+        output_files: list[str] | None = None,
+    ) -> ExecutionResult:
+        language = normalize_language(language)
+        return self.run_project(
+            language,
+            {FILE_NAMES[language]: code},
+            env=env,
+            output_files=output_files,
+        )
+
+    def run_command(
+        self,
+        command: str,
+        *,
+        env: dict[str, str] | None = None,
+        output_files: list[str] | None = None,
+    ) -> ExecutionResult:
+        safe_env = validate_env_vars(env) if env else {}
+        safe_output = validate_output_paths(output_files) if output_files else []
+        return self._run_container("bash", ["bash", "-lc", command], {}, safe_env, safe_output)
 
     def run_project(
         self,
         language: str,
         files: Mapping[str, str],
         command: list[str] | None = None,
+        *,
+        env: dict[str, str] | None = None,
+        output_files: list[str] | None = None,
     ) -> ExecutionResult:
         language = normalize_language(language)
         safe_files = validate_project_files(files)
+        safe_env = validate_env_vars(env) if env else {}
+        safe_output = validate_output_paths(output_files) if output_files else []
         run_command = command or RUN_COMMANDS[language]
-        return self._run_container(language, run_command, safe_files)
+        return self._run_container(language, run_command, safe_files, safe_env, safe_output)
 
     def _run_container(
         self,
         language: str,
         command: list[str],
         files: Mapping[str, str],
+        env: dict[str, str],
+        output_files: list[str],
     ) -> ExecutionResult:
         if not self._semaphore.acquire(timeout=EXECUTION_QUEUE_TIMEOUT_SECONDS):
+            executions_total.labels(language=language, status="busy").inc()
             LOGGER.warning(
                 "sandbox_execution_rejected_busy",
                 extra={"language": language, "max_concurrent": MAX_CONCURRENT_EXECUTIONS},
@@ -172,7 +240,7 @@ class DockerSandbox:
                 "Retry shortly."
             )
         try:
-            return self._run_container_locked(language, command, files)
+            return self._run_container_locked(language, command, files, env, output_files)
         finally:
             self._semaphore.release()
 
@@ -181,6 +249,8 @@ class DockerSandbox:
         language: str,
         command: list[str],
         files: Mapping[str, str],
+        env: dict[str, str],
+        output_files: list[str],
     ) -> ExecutionResult:
         image = IMAGES[language]
         container_name = f"mcp-code-sandbox-{language}-{uuid.uuid4().hex}"
@@ -200,6 +270,7 @@ class DockerSandbox:
                     "image": image,
                     "container_name": container_name,
                     "file_count": len(files),
+                    "env_vars": len(env),
                 },
             )
             container = self._client.containers.create(
@@ -210,6 +281,7 @@ class DockerSandbox:
                 detach=True,
                 working_dir="/workspace",
                 volumes=volumes,
+                environment=env or None,
                 network_mode="none",
                 read_only=True,
                 tmpfs=TMPFS,
@@ -250,6 +322,23 @@ class DockerSandbox:
 
             stdout, stdout_truncated = self._read_logs(container, stdout=True, stderr=False)
             stderr, stderr_truncated = self._read_logs(container, stdout=False, stderr=True)
+            artifacts = self._read_output_files(container, output_files) if output_files else {}
+
+            duration_ms = int((time.monotonic() - started_at) * 1000)
+            status = (
+                "timed_out"
+                if timed_out
+                else "oom_killed"
+                if oom_killed
+                else "error"
+                if exit_code != 0
+                else "success"
+            )
+            executions_total.labels(language=language, status=status).inc()
+            execution_duration_seconds.labels(language=language).observe(duration_ms / 1000)
+            output_bytes_total.labels(language=language, stream="stdout").inc(len(stdout.encode()))
+            output_bytes_total.labels(language=language, stream="stderr").inc(len(stderr.encode()))
+
             LOGGER.info(
                 "sandbox_execution_finish",
                 extra={
@@ -259,10 +348,11 @@ class DockerSandbox:
                     "exit_code": exit_code,
                     "timed_out": timed_out,
                     "oom_killed": oom_killed,
-                    "duration_ms": int((time.monotonic() - started_at) * 1000),
+                    "duration_ms": duration_ms,
                     "stdout_bytes": len(stdout.encode("utf-8")),
                     "stderr_bytes": len(stderr.encode("utf-8")),
                     "output_truncated": stdout_truncated or stderr_truncated,
+                    "artifact_count": len(artifacts),
                 },
             )
             return ExecutionResult(
@@ -272,6 +362,8 @@ class DockerSandbox:
                 timed_out=timed_out,
                 oom_killed=oom_killed,
                 output_truncated=stdout_truncated or stderr_truncated,
+                duration_ms=duration_ms,
+                output_files=artifacts,
             )
         except self._docker_exception as exc:
             error_id = uuid.uuid4().hex[:12]
@@ -334,6 +426,27 @@ class DockerSandbox:
         except self._docker_exception as exc:
             LOGGER.warning("sandbox_gc_failed", extra={"error": str(exc)})
 
+    def _read_output_files(self, container: Any, paths: list[str]) -> dict[str, str]:
+        """Read output files from the container and return them base64-encoded."""
+        artifacts: dict[str, str] = {}
+        for path in paths:
+            try:
+                bits, _ = container.get_archive(path)
+                buf = io.BytesIO()
+                for chunk in bits:
+                    buf.write(chunk)
+                buf.seek(0)
+                with tarfile.open(fileobj=buf) as tar:
+                    for member in tar.getmembers():
+                        if member.isfile():
+                            f = tar.extractfile(member)
+                            if f:
+                                key = PurePosixPath(path).name
+                                artifacts[key] = base64.b64encode(f.read()).decode()
+            except self._docker_exception:
+                LOGGER.debug("sandbox_output_file_missing", extra={"path": path})
+        return artifacts
+
     def _read_logs(self, container: Any, *, stdout: bool, stderr: bool) -> tuple[str, bool]:
         """Read one log stream, stopping early once MAX_OUTPUT_BYTES is exceeded."""
         buffer = bytearray()
@@ -390,6 +503,37 @@ class DockerSandbox:
                         "sandbox_helper_remove_failed",
                         extra={"helper_name": helper_name, "error": str(exc)},
                     )
+
+
+def list_supported_languages() -> dict[str, str]:
+    """Return {language: version} for every configured sandbox image."""
+    return dict(LANGUAGE_VERSIONS)
+
+
+def validate_env_vars(env: dict[str, str]) -> dict[str, str]:
+    if len(env) > MAX_ENV_VARS:
+        raise InvalidProjectFileError(f"Too many env vars: {len(env)} (limit: {MAX_ENV_VARS})")
+    for key, val in env.items():
+        if not _ENV_KEY_RE.match(key):
+            raise InvalidProjectFileError(
+                f"Invalid env var name {key!r}. Must match [A-Za-z_][A-Za-z0-9_]*"
+            )
+        if len(key) > _MAX_ENV_KEY_LEN:
+            raise InvalidProjectFileError(f"Env var name too long: {key!r}")
+        if len(val) > _MAX_ENV_VAL_LEN:
+            raise InvalidProjectFileError(f"Env var value too long for key {key!r}")
+    return dict(env)
+
+
+def validate_output_paths(paths: list[str]) -> list[str]:
+    if len(paths) > MAX_OUTPUT_FILES:
+        raise InvalidProjectFileError(
+            f"Too many output files: {len(paths)} (limit: {MAX_OUTPUT_FILES})"
+        )
+    for path in paths:
+        if ".." in PurePosixPath(path).parts:
+            raise InvalidProjectFileError(f"Unsafe output path: {path!r}")
+    return list(paths)
 
 
 def normalize_language(language: str) -> str:

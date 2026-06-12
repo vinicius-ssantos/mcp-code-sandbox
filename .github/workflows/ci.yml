@@ -51,6 +51,24 @@ jobs:
       - name: mypy
         run: mypy server/
 
+      - name: pip-audit
+        run: pip-audit -r server/requirements.txt --desc on
+
+  trivy:
+    name: Trivy vulnerability scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Scan Python dependencies for CVEs
+        uses: aquasecurity/trivy-action@6c175e9c4083a92bbca2f9724c8a5e33bc2d97a5 # v0.30.0
+        with:
+          scan-type: fs
+          scan-ref: server/requirements.lock
+          format: table
+          exit-code: "1"
+          severity: CRITICAL,HIGH
+
   unit-tests:
     name: Unit tests
     # Unit tests mock Docker and do not require the daemon; safe on any runner,

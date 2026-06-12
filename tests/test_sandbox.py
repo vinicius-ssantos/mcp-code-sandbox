@@ -124,7 +124,7 @@ def test_run_container_rejects_when_at_capacity(monkeypatch):
     monkeypatch.setattr(sb, "EXECUTION_QUEUE_TIMEOUT_SECONDS", 0)
 
     with pytest.raises(SandboxBusyError):
-        sandbox._run_container("python", ["python"], {})
+        sandbox._run_container("python", ["python"], {}, {}, [])
 
     sandbox._client.containers.create.assert_not_called()
 
@@ -200,7 +200,7 @@ def test_gc_labels_are_applied_to_containers_create():
     mock_container.logs.return_value = iter([])
     mock_client.containers.create.return_value = mock_container
 
-    sandbox._run_container_locked("python", ["python", "/workspace/main.py"], {})
+    sandbox._run_container_locked("python", ["python", "/workspace/main.py"], {}, {}, [])
 
     create_kwargs = mock_client.containers.create.call_args.kwargs
     assert create_kwargs.get("labels") == {"managed-by": "mcp-code-sandbox"}
@@ -217,7 +217,7 @@ def test_kill_race_condition_does_not_raise_when_container_already_stopped():
     mock_container.logs.return_value = iter([])
     mock_client.containers.create.return_value = mock_container
 
-    result = sandbox._run_container_locked("python", ["python", "/workspace/main.py"], {})
+    result = sandbox._run_container_locked("python", ["python", "/workspace/main.py"], {}, {}, [])
 
     assert result.timed_out is False
     assert result.exit_code == 0
