@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+import requests.exceptions
+
 
 def _env_int(name: str, default: int) -> int:
     raw = os.getenv(name)
@@ -39,6 +41,11 @@ MAX_PROJECT_BYTES = _env_int("SANDBOX_MAX_PROJECT_BYTES", 8_388_608)
 MAX_CONCURRENT_EXECUTIONS = _env_int("SANDBOX_MAX_CONCURRENT", 4)
 EXECUTION_QUEUE_TIMEOUT_SECONDS = _env_int("SANDBOX_QUEUE_TIMEOUT_SECONDS", 30)
 LOGGER = logging.getLogger("mcp_code_sandbox.sandbox")
+# Label applied to every container and volume so orphans left by a crash can be
+# identified and removed on the next server startup.
+_MANAGED_BY_LABEL = {"managed-by": "mcp-code-sandbox"}
+# Keeps the workspace-init helper alive while put_archive uploads the project.
+_HELPER_KEEPALIVE_CMD = ["tail", "-f", "/dev/null"]
 
 IMAGES = {
     "python": "mcp-sandbox-python:local",
@@ -91,6 +98,7 @@ class ExecutionResult:
     exit_code: int
     timed_out: bool = False
     output_truncated: bool = False
+    oom_killed: bool = False
 
     def format_for_mcp(self) -> str:
         parts: list[str] = []
@@ -101,6 +109,8 @@ class ExecutionResult:
         parts.append(f"exit_code: {self.exit_code}")
         if self.timed_out:
             parts.append("status: timed_out")
+        if self.oom_killed:
+            parts.append("status: oom_killed")
         if self.output_truncated:
             parts.append("status: output_truncated")
         return "\n\n".join(parts)
@@ -119,6 +129,7 @@ class DockerSandbox:
         self._docker_exception = docker.errors.DockerException
         self._client = docker.from_env()
         self._semaphore = threading.BoundedSemaphore(MAX_CONCURRENT_EXECUTIONS)
+        self._gc_orphaned_resources()
 
     def run_code(self, language: str, code: str) -> ExecutionResult:
         language = normalize_language(language)
@@ -188,6 +199,7 @@ class DockerSandbox:
                 image=image,
                 command=command,
                 name=container_name,
+                labels=_MANAGED_BY_LABEL,
                 detach=True,
                 working_dir="/workspace",
                 volumes=volumes,
@@ -205,22 +217,29 @@ class DockerSandbox:
             )
 
             container.start()
-            deadline = time.monotonic() + TIMEOUT_SECONDS
             timed_out = False
+            oom_killed = False
             exit_code = 124
 
-            while True:
-                container.reload()
-                state = container.attrs.get("State", {})
-                if not state.get("Running"):
-                    exit_code = int(state.get("ExitCode") or 0)
-                    break
-                if time.monotonic() >= deadline:
-                    timed_out = True
+            try:
+                wait_result = container.wait(timeout=TIMEOUT_SECONDS)
+                exit_code = int(wait_result.get("StatusCode") or 0)
+            except requests.exceptions.ReadTimeout:
+                timed_out = True
+                exit_code = 124
+                try:
                     container.kill()
-                    exit_code = 124
-                    break
-                time.sleep(0.1)
+                except self._docker_exception:
+                    # Container exited between the timeout and our kill call;
+                    # treat as normal completion and retrieve the real exit code.
+                    container.reload()
+                    state = container.attrs.get("State", {})
+                    exit_code = int(state.get("ExitCode") or 0)
+                    timed_out = False
+
+            # Reload to capture OOMKilled (not present in wait result).
+            container.reload()
+            oom_killed = bool(container.attrs.get("State", {}).get("OOMKilled"))
 
             stdout, stdout_truncated = self._read_logs(container, stdout=True, stderr=False)
             stderr, stderr_truncated = self._read_logs(container, stdout=False, stderr=True)
@@ -232,6 +251,7 @@ class DockerSandbox:
                     "container_name": container_name,
                     "exit_code": exit_code,
                     "timed_out": timed_out,
+                    "oom_killed": oom_killed,
                     "duration_ms": int((time.monotonic() - started_at) * 1000),
                     "stdout_bytes": len(stdout.encode("utf-8")),
                     "stderr_bytes": len(stderr.encode("utf-8")),
@@ -243,6 +263,7 @@ class DockerSandbox:
                 stderr=stderr,
                 exit_code=exit_code,
                 timed_out=timed_out,
+                oom_killed=oom_killed,
                 output_truncated=stdout_truncated or stderr_truncated,
             )
         except self._docker_exception as exc:
@@ -265,13 +286,46 @@ class DockerSandbox:
             if container is not None:
                 try:
                     container.remove(force=True)
-                except self._docker_exception:
-                    pass
+                except self._docker_exception as exc:
+                    LOGGER.warning(
+                        "sandbox_container_remove_failed",
+                        extra={"container_name": container_name, "error": str(exc)},
+                    )
             if workspace_volume is not None:
                 try:
                     workspace_volume.remove(force=True)
-                except self._docker_exception:
-                    pass
+                except self._docker_exception as exc:
+                    LOGGER.warning(
+                        "sandbox_volume_remove_failed",
+                        extra={"volume_name": workspace_volume.name, "error": str(exc)},
+                    )
+
+    def _gc_orphaned_resources(self) -> None:
+        """Remove containers and volumes left by a previous server crash."""
+        label_filter = {"label": "managed-by=mcp-code-sandbox"}
+        try:
+            orphan_containers = self._client.containers.list(all=True, filters=label_filter)
+            for c in orphan_containers:
+                try:
+                    c.remove(force=True)
+                    LOGGER.info("sandbox_gc_container_removed", extra={"id": c.short_id})
+                except self._docker_exception as exc:
+                    LOGGER.warning(
+                        "sandbox_gc_container_failed",
+                        extra={"id": c.short_id, "error": str(exc)},
+                    )
+            orphan_volumes = self._client.volumes.list(filters=label_filter)
+            for v in orphan_volumes:
+                try:
+                    v.remove(force=True)
+                    LOGGER.info("sandbox_gc_volume_removed", extra={"name": v.name})
+                except self._docker_exception as exc:
+                    LOGGER.warning(
+                        "sandbox_gc_volume_failed",
+                        extra={"name": v.name, "error": str(exc)},
+                    )
+        except self._docker_exception as exc:
+            LOGGER.warning("sandbox_gc_failed", extra={"error": str(exc)})
 
     def _read_logs(self, container: Any, *, stdout: bool, stderr: bool) -> tuple[str, bool]:
         """Read one log stream, stopping early once MAX_OUTPUT_BYTES is exceeded."""
@@ -287,14 +341,15 @@ class DockerSandbox:
 
     def _create_workspace_volume(self, image: str, files: Mapping[str, str]) -> Any:
         volume_name = f"mcp-code-sandbox-workspace-{uuid.uuid4().hex}"
-        volume = self._client.volumes.create(name=volume_name)
+        volume = self._client.volumes.create(name=volume_name, labels=_MANAGED_BY_LABEL)
         helper_name = f"mcp-code-sandbox-volume-init-{uuid.uuid4().hex}"
         helper = None
         try:
             helper = self._client.containers.create(
                 image=image,
-                command=["sleep", "60"],
+                command=_HELPER_KEEPALIVE_CMD,
                 name=helper_name,
+                labels=_MANAGED_BY_LABEL,
                 detach=True,
                 working_dir="/workspace",
                 volumes={volume.name: {"bind": "/workspace", "mode": "rw"}},
@@ -323,8 +378,11 @@ class DockerSandbox:
             if helper is not None:
                 try:
                     helper.remove(force=True)
-                except self._docker_exception:
-                    pass
+                except self._docker_exception as exc:
+                    LOGGER.warning(
+                        "sandbox_helper_remove_failed",
+                        extra={"helper_name": helper_name, "error": str(exc)},
+                    )
 
 
 def normalize_language(language: str) -> str:

@@ -74,7 +74,13 @@ def create_server(host: str, port: int) -> FastMCP:
 
     @mcp.tool()
     def run_code(language: str, code: str) -> str:
-        """Execute a Python, Node or Java snippet in an ephemeral Docker container."""
+        """Execute a code snippet in an ephemeral Docker container.
+
+        Supported languages: python, node, java, bash.
+
+        Java constraint: the public class must be named Main (default package).
+        The file is saved as Main.java and executed as `java Main`.
+        """
         return tools.run_code(language, code)
 
     @mcp.tool()
@@ -84,7 +90,14 @@ def create_server(host: str, port: int) -> FastMCP:
 
     @mcp.tool()
     def run_file(language: str, files: dict[str, str]) -> str:
-        """Execute a multi-file Python, Node or Java project in an ephemeral Docker container."""
+        """Execute a multi-file project in an ephemeral Docker container.
+
+        Supported languages: python, node, java, bash.
+
+        Java constraint: the entry-point class must be named Main (default
+        package) and its file must be named Main.java. The project is compiled
+        with javac and run as `java Main`.
+        """
         return tools.run_file(language, files)
 
     return mcp
